@@ -33,7 +33,7 @@ Fully documented API reference can be found [here](https://zhuhaow.github.io/tun
 [Carthage](https://github.com/Carthage/Carthage) is recommended to integrate tun2socks by adding
 
 ```
-github "zhuhaow/tun2socks"
+github "hyperorchidlab/tun2socks"
 ```
 
 to the `Cartfile`.
