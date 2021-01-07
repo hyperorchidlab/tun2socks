@@ -199,7 +199,7 @@ public final class TSTCPSocket {
         
     public func writeData(_ data: Data) -> err_t{
         guard isValid else {
-                return ERR_VAL
+                return err_t(ERR_VAL)
         }
         
         let pp : @convention(c) (UnsafeMutablePointer<Int8>?)->Void = { (data) in
@@ -217,7 +217,7 @@ public final class TSTCPSocket {
         }
         
         tcp_output(pcb)
-        return ERR_OK
+        return err_t(ERR_OK)
     }
     
     /**
