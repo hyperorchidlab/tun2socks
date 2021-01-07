@@ -197,9 +197,9 @@ public final class TSTCPSocket {
                 return tcp_buf(pcb)
         }
         
-    public func writeData(_ data: Data) {
+    public func writeData(_ data: Data) -> err_t{
         guard isValid else {
-            return
+                return ERR_VAL
         }
         
         let pp : @convention(c) (UnsafeMutablePointer<Int8>?)->Void = { (data) in
@@ -213,10 +213,11 @@ public final class TSTCPSocket {
         let err = tcp_write(pcb, (data as NSData).bytes, UInt16(data.count), UInt8(TCP_WRITE_FLAG_COPY), pp)
         if  err != err_t(ERR_OK) {
                 NSLog("---------> tcp_write err[\(err)]")
-            close()
-        } else {
-            tcp_output(pcb)
+                return err
         }
+        
+        tcp_output(pcb)
+        return ERR_OK
     }
     
     /**

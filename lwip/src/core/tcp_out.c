@@ -321,7 +321,7 @@ tcp_write_checks(struct tcp_pcb *pcb, u16_t len, PF *swprint)
    * configured maximum, return an error */
   /* check for configured max queuelen and possible overflow */
   if ((pcb->snd_queuelen >= TCP_SND_QUEUELEN) || (pcb->snd_queuelen > TCP_SNDQUEUELEN_OVERFLOW)) {
-          sprintf(buf,"----++++++2-----> tcp_write: too long queue %"U16_F" (max %"U16_F")\n",
+          sprintf(buf,"----++++++2-----> tcp_write: too long queue %"U16_F" (max %u"U16_F")\n",
       pcb->snd_queuelen, TCP_SND_QUEUELEN);
     TCP_STATS_INC(tcp.memerr);
     pcb->flags |= TF_NAGLEMEMERR;
@@ -603,7 +603,7 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
      * overflows. */
     if ((queuelen > TCP_SND_QUEUELEN) || (queuelen > TCP_SNDQUEUELEN_OVERFLOW)) {
             char buf[1024]={0};
-            sprintf(buf,"----+++++++-----> tcp_write: queue too long %"U16_F" (%"U16_F")\n", queuelen, TCP_SND_QUEUELEN);
+            sprintf(buf,"----+++++++-----> tcp_write: queue too long %"U16_F" (%u"U16_F")\n", queuelen, TCP_SND_QUEUELEN);
             swprint(buf);
       pbuf_free(p);
       goto memerr;
