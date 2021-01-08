@@ -215,9 +215,9 @@ public final class TSTCPSocket {
                 }
                 
                 NSLog("--------->[3]cache_size is [\(cache_size)]]")
-                queue?.async {
+//                queue?.async {
                         tcp_pop_data(self.cache, self.pcb, self.printPointer)
-                }
+//                }
                 
 //                var buf_size = Int(writeBufSize())
 //                if buf_size == 0{
