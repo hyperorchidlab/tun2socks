@@ -318,10 +318,22 @@ err_t            tcp_shutdown(struct tcp_pcb *pcb, int shut_rx, int shut_tx);
 #define TCP_WRITE_FLAG_COPY 0x01
 #define TCP_WRITE_FLAG_MORE 0x02
 
-typedef  void  PF(char*);
+typedef  void  PrintCB(char*);
+typedef struct SliceCacheST {
+        void* ptr;
+        int size;
+} SliceCache;
+
+SliceCache* tcp_new_cache(void);
+int tcp_cache_size(SliceCache* cache);
+void tcp_append_cache(SliceCache*, const void *dataptr, int len, PrintCB *swprint);
+err_t tcp_pop_data(SliceCache* cache, struct tcp_pcb *pcb, PrintCB *swprint);
+void tcp_free_cache(SliceCache*);
+
+
 u16_t tcp_buf(struct tcp_pcb *pcb);
 err_t            tcp_write   (struct tcp_pcb *pcb, const void *dataptr, u16_t len,
-                              u8_t apiflags, PF* swprint);
+                              u8_t apiflags, PrintCB* swprint);
 
 void             tcp_setprio (struct tcp_pcb *pcb, u8_t prio);
 

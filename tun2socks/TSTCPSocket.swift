@@ -117,8 +117,22 @@ public final class TSTCPSocket {
     fileprivate var identity: Int
     fileprivate let identityArg: UnsafeMutablePointer<Int>
     fileprivate var closedSignalSend = false
-    
-    
+       
+//        let cacheQueue = DispatchQueue(label: "TCP Data Write", qos: .userInitiated)
+        var queue:DispatchQueue?
+        var cache: UnsafeMutablePointer<SliceCache>?
+//        fileprivate  static var DataCache: [Int:Data] = [:]
+//        fileprivate    var writeLock = NSLock()
+//        fileprivate var writeSig = DispatchSemaphore(value: 0)
+        
+        let printPointer : @convention(c) (UnsafeMutablePointer<Int8>?)->Void = { (data) in
+                guard let ss = data else {
+                        return
+                }
+                let str = String(cString: ss)
+                NSLog("--------->\(str)")
+        }
+        
     var isValid: Bool {
         return pcb != nil
     }
@@ -149,10 +163,15 @@ public final class TSTCPSocket {
         identityArg.pointee = identity
         SocketDict.socketDict[identity] = self
         
+//        TSTCPSocket.DataCache[identity] = Data()
+        
         tcp_arg(pcb, identityArg)
         tcp_recv(pcb, tcp_recv_func)
         tcp_sent(pcb, tcp_sent_func)
         tcp_err(pcb, tcp_err_func)
+        
+        self.cache = tcp_new_cache()
+        self.queue = queue
     }
     
     func errored(_ error: err_t) {
@@ -166,11 +185,6 @@ public final class TSTCPSocket {
             break
         }
     }
-    
-    func sent(_ length: Int) {
-        delegate?.didWriteData(length, from: self)
-    }
-    
     func recved(_ buf: UnsafeMutablePointer<pbuf>?) {
         if buf == nil {
             delegate?.localDidClose(self)
@@ -190,6 +204,58 @@ public final class TSTCPSocket {
      
      - parameter data: The data to send.
      */
+        
+        func sent(_ length: Int) {
+//                NSLog("--------->[2]sent success len=[\(length)]")
+                delegate?.didWriteData(length, from: self)
+                let cache_size = tcp_cache_size(self.cache)
+                if cache_size == 0{
+//                        NSLog("--------->[4]cached is clear")
+                        return
+                }
+                
+                NSLog("--------->[3]cache_size is [\(cache_size)]]")
+                queue?.async {
+                        tcp_pop_data(self.cache, self.pcb, self.printPointer)
+                }
+                
+//                var buf_size = Int(writeBufSize())
+//                if buf_size == 0{
+//                        NSLog("--------->sent success can't be zero buffer")
+//                        return
+//                }
+//                tcp_pop_data(self.cache, (data as NSData).bytes, buf_size)
+//                guard var cache = TSTCPSocket.DataCache[identity] else{
+//                        NSLog("--------->NO SUCH CACHE")
+//                        return
+//                }
+//
+//                if buf_size > 65536/2{
+//                        buf_size = 65536/2
+//                }
+//
+//                let slice = cache.prefix(buf_size)
+//                let slice_size = slice.count
+//                NSLog("--------->cached size:[\(cache_size)] slice size:[\(slice_size)]")
+//                let wRet = tcpWrite(slice)
+//                if wRet != ERR_OK{
+//                        NSLog("--------->tcp send split err \(wRet)")
+//                        self.writeLock.unlock()
+//                        return
+//                }
+//
+//                self.writeLock.lock()
+//                cache.removeSubrange(0 ..< slice_size)
+//                self.writeLock.unlock()
+        }
+        
+//        func appendData(data:Data){
+//                self.writeLock.lock()
+//                TSTCPSocket.DataCache[identity]?.append(data)
+//                self.writeLock.unlock()
+//                NSLog("--------->DataCache.count=[\(TSTCPSocket.DataCache.count)] current cache size =[\(TSTCPSocket.DataCache[identity]!.count)]")
+//        }
+//        
         public func writeBufSize() -> UInt16{
                 if pcb == nil{
                         return 0
@@ -197,26 +263,49 @@ public final class TSTCPSocket {
                 return tcp_buf(pcb)
         }
         
+        func tcpWrite(_ data: Data) -> err_t{
+               
+//                NSLog("--------->[1]tcpWrite start to send len=[\(data.count)]")
+                let err = tcp_write(pcb, (data as NSData).bytes, UInt16(data.count), UInt8(TCP_WRITE_FLAG_COPY), printPointer )
+                if  err != err_t(ERR_OK) {
+                        NSLog("---------> tcp_write err[\(err)]")
+                        return err
+                }
+                
+                tcp_output(pcb)
+                return err_t(ERR_OK)
+        }
+        
     public func writeData(_ data: Data) -> err_t{
+        
         guard isValid else {
                 return err_t(ERR_VAL)
         }
-        
-        let pp : @convention(c) (UnsafeMutablePointer<Int8>?)->Void = { (data) in
-                guard let ss = data else {
-                        return
-                }
-                let str = String(cString: ss)
-                NSLog("--------->\(str)")
+        let buf_size = Int(writeBufSize())
+        if buf_size == 0{
+                tcp_append_cache(self.cache, (data as NSData).bytes, Int32(data.count), printPointer)
+                return err_t(ERR_OK)
         }
         
-        let err = tcp_write(pcb, (data as NSData).bytes, UInt16(data.count), UInt8(TCP_WRITE_FLAG_COPY), pp)
-        if  err != err_t(ERR_OK) {
-                NSLog("---------> tcp_write err[\(err)]")
-                return err
+        let data_size = data.count
+        if buf_size >= data_size{
+                return tcpWrite(data)
         }
         
-        tcp_output(pcb)
+        let slice = data.prefix(buf_size)
+//        NSLog("--------->writeData====lose data_size = [\(data_size)] buf_size=[\(buf_size)]")
+//        return tcpWrite(slice)
+        
+        let wRet = tcpWrite(slice)
+        if wRet != ERR_OK{
+                NSLog("--------->writeData split err \(wRet)")
+                return err_t(ERR_OK)
+        }
+        
+        let remData = data[buf_size ..< data_size] as NSData
+        tcp_append_cache(self.cache, remData.bytes, Int32(remData.count), printPointer)
+
+        NSLog("--------->writeData split data_size[\(data_size)] buf_size[\(buf_size)] ")
         return err_t(ERR_OK)
     }
     
@@ -264,6 +353,10 @@ public final class TSTCPSocket {
         identityArg.deinitialize(count: 1)
         identityArg.deallocate()
         SocketDict.socketDict.removeValue(forKey: identity)
+        tcp_free_cache(self.cache)
+        
+//        TSTCPSocket.DataCache[identity]?.removeAll()
+//        TSTCPSocket.DataCache.removeValue(forKey: identity)
     }
     
     deinit {

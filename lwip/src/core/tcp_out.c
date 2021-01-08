@@ -294,7 +294,7 @@ tcp_seg_add_chksum(u16_t chksum, u16_t len, u16_t *seg_chksum,
 static err_t
 tcp_write_checks(struct tcp_pcb *pcb, u16_t len, PF *swprint)
 {
-        char buf[1024]={0};
+        char buf[256]={0};
   /* connection is in invalid state for data transmission? */
   if ((pcb->state != ESTABLISHED) &&
       (pcb->state != CLOSE_WAIT) &&
@@ -354,6 +354,114 @@ tcp_write_checks(struct tcp_pcb *pcb, u16_t len, PF *swprint)
  * - TCP_WRITE_FLAG_MORE (0x02) for TCP connection, PSH flag will be set on last segment sent,
  * @return ERR_OK if enqueued, another err_t on error
  */
+#define MAX_SLICE_SIZE (1 << 20)
+SliceCache* tcp_new_cache(){
+        SliceCache *cache = mem_malloc(sizeof(SliceCache));
+        cache->ptr = NULL;
+        cache->size = 0;
+        return cache;
+}
+
+int tcp_cache_size(SliceCache* cache){
+        if (cache == NULL || cache->ptr == NULL){
+                return 0;
+        }
+        return  cache->size;
+}
+
+void tcp_append_cache(SliceCache* cache, const void *dataptr, int len, PF *swprint){
+        char buf[256] = {0};
+       
+        if (cache == NULL || len > MAX_SLICE_SIZE){
+                sprintf(buf,"len is too big[%d]", len);
+                swprint(buf);
+                return;
+        }
+        
+        if (cache->ptr == NULL){
+                cache->ptr = malloc(len);
+                cache->size = len;
+                
+                sprintf(buf,"malloc new cache size is[%d][%p]", len, cache->ptr);
+                swprint(buf);
+                return;
+        }
+        
+        void *new_ptr =  malloc(len + cache->size);
+        if (new_ptr == NULL){
+                sprintf(buf,"realloc cache failed size[%d] len[%d]", cache->size, len);
+                swprint(buf);
+                free(cache->ptr);
+                cache->ptr = NULL;
+                cache->size = 0;
+                return;
+        }
+        
+        if (cache->size > 0){
+                memcpy(new_ptr, cache->ptr, cache->size);
+        }
+        memcpy(new_ptr + cache->size, dataptr, len);
+        free(cache->ptr);
+        cache->ptr = new_ptr;
+        cache->size += len;
+}
+
+
+err_t tcp_pop_data(SliceCache* cache, struct tcp_pcb *pcb, PF *swprint){
+        
+        if (pcb ==  NULL || cache == NULL
+            || pcb->snd_buf == 0|| cache->size == 0
+            || cache->ptr == NULL){
+                return ERR_OK;
+        }
+        
+        char buf[256] = {0};
+        sprintf(buf,"Before:=> cached size[%d] buffer size[%d]\n", cache->size, pcb->snd_buf);
+        swprint(buf);
+        
+        if (pcb->snd_buf > cache->size){
+                err_t ret = tcp_write(pcb, cache->ptr, cache->size, TCP_WRITE_FLAG_COPY, swprint);
+                free(cache->ptr);
+                cache->ptr = NULL;
+                cache->size = 0;
+                
+                sprintf(buf,"Direct:=> pop and clean cache size [%d] buffer size[%d]", cache->size, pcb->snd_buf);
+                swprint(buf);
+                return  ret;
+        }
+        int buf_size = pcb->snd_buf;
+        err_t ret = tcp_write(pcb, cache->ptr, pcb->snd_buf, TCP_WRITE_FLAG_COPY, swprint);
+        int new_size = cache->size - buf_size;
+        void *new_ptr = malloc(new_size);
+        if (new_ptr == NULL){
+                sprintf(buf,"malloc when pop size[%d] len[%d]", cache->size, new_size);
+                swprint(buf);
+                free(cache->ptr);
+                cache->ptr = NULL;
+                cache->size = 0;
+                return ERR_MEM;
+        }
+        
+        memcpy(new_ptr, cache->ptr + buf_size, new_size);
+        free(cache->ptr);
+        cache->ptr = new_ptr;
+        cache->size = new_size;
+        
+        sprintf(buf,"After:=> cached size[%d] buffer size[%d]\n", cache->size, pcb->snd_buf);
+        swprint(buf);
+        return ret;
+}
+
+void tcp_free_cache(SliceCache* cache){
+        if (cache->ptr != NULL){
+                free(cache->ptr);
+                cache->ptr = NULL;
+        }
+        
+        cache->size = 0;
+        free(cache);
+}
+
 
 u16_t tcp_buf(struct tcp_pcb *pcb){
         if (pcb ==  NULL){
@@ -389,10 +497,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
   /* Always copy to try to create single pbufs for TX */
   apiflags |= TCP_WRITE_FLAG_COPY;
 #endif /* LWIP_NETIF_TX_SINGLE_PBUF */
-        char buf[1024]={0};
-//        sprintf(buf,"---------> tcp_write(pcb=%p, data=%p, len=%"U16_F", apiflags=%"U16_F")\n",
-//    (void *)pcb, arg, len, (u16_t)apiflags);
-//        swprint(buf);
   LWIP_ERROR("tcp_write: arg == NULL (programmer violates API)", 
              arg != NULL, return ERR_ARG;);
 
@@ -489,11 +593,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
       if (apiflags & TCP_WRITE_FLAG_COPY) {
         /* Data is copied */
         if ((concat_p = tcp_pbuf_prealloc(PBUF_RAW, seglen, space, &oversize, pcb, apiflags, 1)) == NULL) {
-                char buf[1024]={0};
-                sprintf(buf,"----+++++++-----> tcp_write : could not allocate memory for pbuf copy size %"U16_F"\n",
-                       seglen);
-                
-                swprint(buf);
           goto memerr;
         }
 #if TCP_OVERSIZE_DBGCHECK
@@ -506,9 +605,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
       } else {
         /* Data is not copied */
         if ((concat_p = pbuf_alloc(PBUF_RAW, seglen, PBUF_ROM)) == NULL) {
-                char buf[1024]={0};
-                sprintf(buf,"-----+++++++----> tcp_write: could not allocate memory for zero-copy pbuf\n");
-                swprint(buf);
           goto memerr;
         }
 #if TCP_CHECKSUM_ON_COPY
@@ -551,9 +647,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
       /* If copy is set, memory should be allocated and data copied
        * into pbuf */
       if ((p = tcp_pbuf_prealloc(PBUF_TRANSPORT, seglen + optlen, mss_local, &oversize, pcb, apiflags, queue == NULL)) == NULL) {
-              char buf[1024]={0};
-              sprintf(buf,"----+++++++-----> tcp_write : could not allocate memory for pbuf copy size %"U16_F"\n", seglen);
-              swprint(buf);
         goto memerr;
       }
       LWIP_ASSERT("---------> tcp_write: check that first pbuf can hold the complete seglen",
@@ -570,9 +663,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
       LWIP_ASSERT("---------> oversize == 0", oversize == 0);
 #endif /* TCP_OVERSIZE */
       if ((p2 = pbuf_alloc(PBUF_TRANSPORT, seglen, PBUF_ROM)) == NULL) {
-              char buf[1024]={0};
-              sprintf(buf,"-----+++++++----> tcp_write: could not allocate memory for zero-copy pbuf\n");
-              swprint(buf);
         goto memerr;
       }
 #if TCP_CHECKSUM_ON_COPY
@@ -587,9 +677,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
         /* If allocation fails, we have to deallocate the data pbuf as
          * well. */
         pbuf_free(p2);
-              char buf[1024]={0};
-              sprintf(buf,"----+++++++-----> tcp_write: could not allocate memory for header pbuf\n");
-              swprint(buf);
         goto memerr;
       }
       /* Concatenate the headers and data pbufs together. */
@@ -602,15 +689,11 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
      * length of the queue exceeds the configured maximum or
      * overflows. */
     if ((queuelen > TCP_SND_QUEUELEN) || (queuelen > TCP_SNDQUEUELEN_OVERFLOW)) {
-            char buf[1024]={0};
-            sprintf(buf,"----+++++++-----> tcp_write: queue too long %"U16_F" (%u"U16_F")\n", queuelen, TCP_SND_QUEUELEN);
-            swprint(buf);
       pbuf_free(p);
       goto memerr;
     }
 
     if ((seg = tcp_create_segment(pcb, p, 0, pcb->snd_lbb + pos, optflags)) == NULL) {
-            swprint("----+++++++-----tcp_create_segment == null");
       goto memerr;
     }
 #if TCP_OVERSIZE_DBGCHECK
@@ -633,11 +716,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
     /* remember last segment of to-be-queued data for next iteration */
     prev_seg = seg;
 
-//          char buf[1024]={0};
-//          sprintf(buf,"---------> tcp_write: queueing %"U32_F":%"U32_F"\n",
-//      ntohl(seg->tcphdr->seqno),
-//      ntohl(seg->tcphdr->seqno) + TCP_TCPLEN(seg));
-//          swprint(buf);
     pos += seglen;
   }
 
@@ -705,9 +783,6 @@ tcp_write(struct tcp_pcb *pcb, const void *arg, u16_t len, u8_t apiflags, PF *sw
   pcb->snd_buf -= len;
   pcb->snd_queuelen = queuelen;
 
-//        sprintf(buf,"---------> tcp_write: %"S16_F" (after enqueued)\n",
-//    pcb->snd_queuelen);
-//        swprint(buf);
   if (pcb->snd_queuelen != 0) {
     LWIP_ASSERT("tcp_write: valid queue length",
                 pcb->unacked != NULL || pcb->unsent != NULL);
@@ -733,8 +808,7 @@ memerr:
     LWIP_ASSERT("-----+++++++----> tcp_write: valid queue length", pcb->unacked != NULL ||
       pcb->unsent != NULL);
   }
-        sprintf(buf,"----+++++++-----> tcp_write: %"S16_F" (with mem err)\n", pcb->snd_queuelen);
-        swprint(buf);
+
   return ERR_MEM;
 }
 
